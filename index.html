@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Temperaturas de Europa en 2025</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    #chart text { font-family: inherit; }
+    #chart .domain { display: none; }
+  </style>
+</head>
+<body class="bg-white text-slate-900 antialiased">
+  <main class="mx-auto max-w-5xl px-4 py-12 sm:px-8 sm:py-16">
+    <header class="mb-8">
+      <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">Temperaturas de Europa en 2025</h1>
+      <p class="mt-2 text-sm text-slate-500">Temperatura media diaria en la capital de cada país, ordenados del más frío al más cálido.</p>
+    </header>
+
+    <div class="mb-6 flex flex-wrap items-end gap-x-10 gap-y-4">
+      <div>
+        <p class="text-xs font-medium text-slate-500">Media anual (°C)</p>
+        <svg id="legend" class="mt-1.5 block" width="240" height="30"></svg>
+      </div>
+    </div>
+
+    <div id="chart" class="relative w-full">
+      <div id="tooltip" class="pointer-events-none absolute z-10 hidden rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-sm"></div>
+    </div>
+    <p class="mt-4 text-xs text-slate-400">Media móvil de 7 días. La altura de cada cresta mide la temperatura en grados Celsius (°C) según la escala de la derecha.</p>
+  </main>
+
+  <script>
+    d3.timeFormatDefaultLocale({
+      dateTime: '%A, %e de %B de %Y, %X', date: '%d/%m/%Y', time: '%H:%M:%S',
+      periods: ['AM', 'PM'],
+      days: ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'],
+      shortDays: ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'],
+      months: ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'],
+      shortMonths: ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'],
+    });
+
+    // Gradiente del país más frío (azul) al más cálido (rojo)
+    const RAMP = t => d3.interpolateRdYlBu(0.95 - t * 0.9);
+    const WINDOW = 7;
+    const fmtTemp = d => `${d3.format('.1f')(d).replace('.', ',')} °C`;
+    const fmtDay = d3.utcFormat('%-d de %B');
+    const fmtMonth = d3.utcFormat('%b');
+
+    fetch('data/temperaturas-2025.json')
+      .then(r => r.json())
+      .then(data => {
+        const start = d3.utcParse('%Y-%m-%d')(data.start);
+        const countries = data.countries.map(c => {
+          const days = c.temps.map((t, i) => ({ date: d3.utcDay.offset(start, i), temp: t }));
+          // Media móvil centrada para suavizar las crestas
+          const half = Math.floor(WINDOW / 2);
+          days.forEach((d, i) => {
+            d.smooth = d3.mean(c.temps.slice(Math.max(0, i - half), i + half + 1));
+          });
+          return { ...c, days, mean: d3.mean(c.temps) };
+        }).sort((a, b) => a.mean - b.mean);
+
+        const means = countries.map(c => c.mean);
+        const color = d3.scaleSequential(RAMP).domain(d3.extent(means));
+
+        drawLegend(color);
+        const draw = () => drawChart(countries, color);
+        draw();
+        new ResizeObserver(draw).observe(document.getElementById('chart'));
+      });
+
+    function drawLegend(color) {
+      const svg = d3.select('#legend');
+      const [lo, hi] = color.domain();
+      const w = +svg.attr('width');
+      const x = d3.scaleLinear().domain([Math.floor(lo), Math.ceil(hi)]).range([0, w]);
+      const grad = svg.append('defs').append('linearGradient').attr('id', 'legend-grad');
+      d3.range(0, 1.01, 0.1).forEach(t => {
+        const v = x.invert(t * w);
+        grad.append('stop').attr('offset', `${t * 100}%`).attr('stop-color', color(Math.max(lo, Math.min(hi, v))));
+      });
+      svg.append('rect').attr('width', w).attr('height', 8).attr('rx', 4).attr('fill', 'url(#legend-grad)');
+      svg.append('g').attr('transform', 'translate(0,12)')
+        .call(d3.axisBottom(x).ticks(4).tickSize(0).tickPadding(6).tickFormat(d => `${d}°`))
+        .call(g => g.select('.domain').remove())
+        .call(g => g.selectAll('text').attr('fill', '#94a3b8').attr('font-size', 11).attr('font-family', 'Inter, system-ui, sans-serif'))
+        .call(g => g.selectAll('.tick:first-of-type text').attr('text-anchor', 'start'))
+        .call(g => g.selectAll('.tick:last-of-type text').attr('text-anchor', 'end'));
+    }
+
+    function drawChart(countries, color) {
+      const container = document.getElementById('chart');
+      const tooltip = document.getElementById('tooltip');
+      d3.select(container).select('svg').remove();
+
+      const width = container.clientWidth;
+      const narrow = width < 560;
+      const fontSize = narrow ? 11 : 12;
+      const flagW = narrow ? 16 : 20, flagH = flagW * 0.75;
+      const step = narrow ? 24 : 30;
+
+      // Columna de etiquetas: nombre alineado a la izquierda y bandera en una misma vertical
+      const measure = d3.select(container).append('svg').attr('width', 0).attr('height', 0);
+      const nameW = d3.max(countries, c => {
+        const t = measure.append('text').attr('font-size', fontSize).text(c.name);
+        const w = t.node().getComputedTextLength();
+        t.remove();
+        return w;
+      });
+      measure.remove();
+      const flagX = Math.ceil(nameW) + 8;
+
+      const BASE = -15;
+      const tMax = d3.max(countries, c => d3.max(c.days, d => d.smooth));
+      // Altura de cresta: 10 °C equivalen a 0,45 filas
+      const h = d3.scaleLinear().domain([BASE, BASE + 10]).range([0, step * 0.45]);
+      const ridgeMax = h(tMax);
+
+      const m = { top: Math.ceil(ridgeMax) + 4, right: narrow ? 40 : 52, bottom: 32, left: flagX + flagW + 14 };
+      const height = m.top + step * (countries.length - 1) + m.bottom;
+      const lastBase = m.top + step * (countries.length - 1);
+
+      const x = d3.scaleUtc()
+        .domain(d3.extent(countries[0].days, d => d.date))
+        .range([m.left, width - m.right]);
+      const y = d3.scalePoint().domain(countries.map(c => c.code)).range([m.top, lastBase]);
+
+      const svg = d3.select(container).append('svg')
+        .attr('width', width).attr('height', height)
+        .attr('viewBox', [0, 0, width, height]);
+
+      // Rejilla vertical por meses
+      svg.append('g')
+        .attr('transform', `translate(0,${lastBase})`)
+        .call(d3.axisBottom(x).ticks(d3.utcMonth.every(1)).tickFormat(fmtMonth)
+          .tickSize(-(lastBase - m.top + ridgeMax * 0.4)).tickPadding(10))
+        .call(g => g.selectAll('line').attr('stroke', '#f1f5f9'))
+        .call(g => g.selectAll('text').attr('fill', '#94a3b8').attr('font-size', 11)
+          .attr('text-anchor', 'start').attr('dx', 4));
+
+      // Crestas: de arriba (frío) a abajo (cálido), cada una tapa a la anterior
+      const area = d3.area()
+        .x(d => x(d.date)).y0(0).y1(d => -h(d.smooth))
+        .curve(d3.curveBasis);
+      const line = area.lineY1();
+
+      const rows = svg.append('g').selectAll('g').data(countries).join('g')
+        .attr('transform', c => `translate(0,${y(c.code)})`);
+      rows.append('path')
+        .attr('class', 'ridge')
+        .attr('d', c => area(c.days))
+        .attr('fill', c => color(c.mean))
+        .attr('fill-opacity', 0.95);
+      rows.append('path')
+        .attr('d', c => line(c.days))
+        .attr('fill', 'none')
+        .attr('stroke', c => d3.color(color(c.mean)).darker(1.2))
+        .attr('stroke-width', 1);
+      rows.append('line')
+        .attr('x1', m.left).attr('x2', width - m.right)
+        .attr('stroke', '#e2e8f0');
+
+      // Etiquetas a la izquierda
+      const labels = svg.append('g').selectAll('g').data(countries).join('g')
+        .attr('transform', c => `translate(0,${y(c.code)})`);
+      labels.append('text')
+        .attr('y', -flagH / 2).attr('dy', '0.35em')
+        .attr('font-size', fontSize).attr('fill', '#475569')
+        .text(c => c.name);
+      labels.append('image')
+        .attr('href', c => `data/flags/${c.code}.svg`)
+        .attr('x', flagX).attr('y', -flagH)
+        .attr('width', flagW).attr('height', flagH)
+        .attr('preserveAspectRatio', 'xMidYMid slice');
+      labels.append('rect')
+        .attr('x', flagX).attr('y', -flagH)
+        .attr('width', flagW).attr('height', flagH)
+        .attr('fill', 'none').attr('stroke', '#e2e8f0');
+
+      // Escala de temperatura en °C anclada a la última fila
+      const scaleX = width - m.right + 8;
+      const ticks = d3.range(-10, tMax + 1, 10);
+      const scale = svg.append('g').attr('transform', `translate(${scaleX},${lastBase})`);
+      scale.append('line')
+        .attr('y1', -h(BASE)).attr('y2', -h(ticks[ticks.length - 1]))
+        .attr('stroke', '#94a3b8');
+      const tick = scale.selectAll('g').data(ticks).join('g')
+        .attr('transform', d => `translate(0,${-h(d)})`);
+      tick.append('line').attr('x2', 4).attr('stroke', '#94a3b8');
+      tick.append('text')
+        .attr('x', 7).attr('dy', '0.35em')
+        .attr('font-size', 10).attr('fill', '#94a3b8')
+        .text(d => `${d}°`.replace('-', '−'));
+      scale.append('text')
+        .attr('y', -h(ticks[ticks.length - 1]) - 12)
+        .attr('font-size', 10).attr('font-weight', 500).attr('fill', '#64748b')
+        .text('°C');
+
+      // Hover: guía vertical, punto y tooltip con la temperatura del día
+      const bisect = d3.bisector(d => d.date).center;
+      const focus = svg.append('g').style('display', 'none').attr('pointer-events', 'none');
+      focus.append('line').attr('stroke', '#94a3b8');
+      focus.append('circle').attr('r', 4).attr('stroke', '#fff').attr('stroke-width', 2);
+
+      rows.select('.ridge')
+        .on('pointermove', (event, c) => {
+          const [px] = d3.pointer(event, svg.node());
+          const d = c.days[bisect(c.days, x.invert(px))];
+          const cx = x(d.date), base = y(c.code), cy = base - h(d.smooth);
+          focus.style('display', null);
+          focus.select('line').attr('x1', cx).attr('x2', cx).attr('y1', base).attr('y2', cy);
+          focus.select('circle').attr('cx', cx).attr('cy', cy).attr('fill', color(c.mean));
+          labels.select('text')
+            .attr('fill', o => o === c ? '#0f172a' : '#475569')
+            .attr('font-weight', o => o === c ? 600 : 400);
+          tooltip.innerHTML =
+            `<div class="font-medium text-slate-900">${c.name} <span class="font-normal text-slate-400">· ${c.capital}</span></div>` +
+            `<div class="mt-1 text-slate-400">${fmtDay(d.date)}</div>` +
+            `<div class="mt-0.5 text-sm font-semibold text-slate-900">${fmtTemp(d.temp)}</div>` +
+            `<div class="text-slate-400">Media anual ${fmtTemp(c.mean)}</div>`;
+          tooltip.classList.remove('hidden');
+          const left = cx + 12 + tooltip.offsetWidth > width ? cx - 12 - tooltip.offsetWidth : cx + 12;
+          tooltip.style.left = `${left}px`;
+          tooltip.style.top = `${Math.max(0, cy - tooltip.offsetHeight - 10)}px`;
+        })
+        .on('pointerleave', () => {
+          focus.style('display', 'none');
+          tooltip.classList.add('hidden');
+          labels.select('text').attr('fill', '#475569').attr('font-weight', 400);
+        });
+    }
+  </script>
+</body>
+</html>
